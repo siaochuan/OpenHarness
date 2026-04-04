@@ -13,8 +13,6 @@ import type {
 } from '../types.js';
 
 const PROTOCOL_PREFIX = 'OHJSON:';
-const ASSISTANT_DELTA_FLUSH_MS = 33;
-const ASSISTANT_DELTA_FLUSH_CHARS = 256;
 
 export function useBackendSession(config: FrontendConfig, onExit: (code?: number | null) => void) {
 	const [transcript, setTranscript] = useState<TranscriptItem[]>([]);
@@ -29,32 +27,6 @@ export function useBackendSession(config: FrontendConfig, onExit: (code?: number
 	const [busy, setBusy] = useState(false);
 	const childRef = useRef<ChildProcessWithoutNullStreams | null>(null);
 	const sentInitialPrompt = useRef(false);
-
-	// Streaming deltas can arrive one token at a time; updating Ink state for each
-	// delta causes heavy re-rendering/flicker. Buffer and flush at ~30fps.
-	const assistantBufferRef = useRef('');
-	const pendingAssistantDeltaRef = useRef('');
-	const assistantFlushTimerRef = useRef<NodeJS.Timeout | null>(null);
-
-	const flushAssistantDelta = (): void => {
-		const pending = pendingAssistantDeltaRef.current;
-		if (!pending) {
-			return;
-		}
-		pendingAssistantDeltaRef.current = '';
-		assistantBufferRef.current += pending;
-		setAssistantBuffer(assistantBufferRef.current);
-	};
-
-	const clearAssistantDelta = (): void => {
-		pendingAssistantDeltaRef.current = '';
-		assistantBufferRef.current = '';
-		if (assistantFlushTimerRef.current) {
-			clearTimeout(assistantFlushTimerRef.current);
-			assistantFlushTimerRef.current = null;
-		}
-		setAssistantBuffer('');
-	};
 
 	const sendRequest = (payload: Record<string, unknown>): void => {
 		const child = childRef.current;
@@ -93,10 +65,6 @@ export function useBackendSession(config: FrontendConfig, onExit: (code?: number
 			if (!child.killed) {
 				child.kill();
 			}
-			if (assistantFlushTimerRef.current) {
-				clearTimeout(assistantFlushTimerRef.current);
-				assistantFlushTimerRef.current = null;
-			}
 		};
 	}, []);
 
@@ -129,39 +97,17 @@ export function useBackendSession(config: FrontendConfig, onExit: (code?: number
 			return;
 		}
 		if (event.type === 'assistant_delta') {
-			const delta = event.message ?? '';
-			if (!delta) {
-				return;
-			}
-			pendingAssistantDeltaRef.current += delta;
-			if (pendingAssistantDeltaRef.current.length >= ASSISTANT_DELTA_FLUSH_CHARS) {
-				flushAssistantDelta();
-				return;
-			}
-			if (!assistantFlushTimerRef.current) {
-				assistantFlushTimerRef.current = setTimeout(() => {
-					assistantFlushTimerRef.current = null;
-					flushAssistantDelta();
-				}, ASSISTANT_DELTA_FLUSH_MS);
-			}
+			setAssistantBuffer((value) => value + (event.message ?? ''));
 			return;
 		}
 		if (event.type === 'assistant_complete') {
-			if (assistantFlushTimerRef.current) {
-				clearTimeout(assistantFlushTimerRef.current);
-				assistantFlushTimerRef.current = null;
-			}
-			flushAssistantDelta();
-			const text = event.message ?? assistantBufferRef.current;
+			const text = event.message ?? assistantBuffer;
 			setTranscript((items) => [...items, {role: 'assistant', text}]);
-			clearAssistantDelta();
+			setAssistantBuffer('');
 			setBusy(false);
 			return;
 		}
 		if (event.type === 'line_complete') {
-			// If the line ended without an assistant_complete (e.g. errors), make sure we
-			// don't leave stale streaming text on screen.
-			clearAssistantDelta();
 			setBusy(false);
 			return;
 		}
@@ -177,7 +123,7 @@ export function useBackendSession(config: FrontendConfig, onExit: (code?: number
 		}
 		if (event.type === 'clear_transcript') {
 			setTranscript([]);
-			clearAssistantDelta();
+			setAssistantBuffer('');
 			return;
 		}
 		if (event.type === 'select_request') {
@@ -195,7 +141,6 @@ export function useBackendSession(config: FrontendConfig, onExit: (code?: number
 		}
 		if (event.type === 'error') {
 			setTranscript((items) => [...items, {role: 'system', text: `error: ${event.message ?? 'unknown error'}`}]);
-			clearAssistantDelta();
 			setBusy(false);
 			return;
 		}
