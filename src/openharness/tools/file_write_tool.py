@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from pydantic import BaseModel, Field
 
 from openharness.tools.base import BaseTool, ToolExecutionContext, ToolResult
+
+log = logging.getLogger(__name__)
 
 
 class FileWriteToolInput(BaseModel):
@@ -30,9 +33,11 @@ class FileWriteTool(BaseTool):
         context: ToolExecutionContext,
     ) -> ToolResult:
         path = _resolve_path(context.cwd, arguments.path)
+        log.debug("write_file: resolved path=%s bytes=%d", path, len(arguments.content))
         if arguments.create_directories:
             path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(arguments.content, encoding="utf-8")
+        log.debug("write_file: done path=%s", path)
         return ToolResult(output=f"Wrote {path}")
 
 
